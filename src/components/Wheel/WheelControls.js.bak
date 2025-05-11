@@ -1,0 +1,2433 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import styled, { keyframes } from 'styled-components';
+import { motion } from 'framer-motion';
+import Button from '../ui/Button';
+import TikTokConnection from '../../utils/TikTokConnection';
+import { Gauge, Settings } from 'lucide-react';
+
+const StatusText = styled.div`
+  text-align: center;
+  margin: 1rem 0 2rem;
+  color: var(--text);
+  font-size: 0.95rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+`;
+
+const ModeSelector = styled.div`
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 10;
+`;
+
+const Controls = styled.div`
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 10;
+`;
+
+const WheelDisplay = styled.div`
+  min-height: 600px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  margin: 2rem 0;
+  overflow: visible;
+  flex-direction: column;
+  
+  /* Add padding to prevent wheel from touching edges */
+  padding: 2rem;
+  box-sizing: border-box;
+  
+  /* Center content more effectively */
+  width: 100%;
+  
+  @media (max-width: 768px) {
+    margin-top: 3rem;
+    min-height: 450px;
+    padding: 1rem;
+  }
+`;
+
+const WheelWrapper = styled.div`
+  position: relative;
+  width: ${props => props.size || 400}px;
+  height: ${props => props.size || 400}px;
+  margin: 0 auto;
+  background-color: transparent;
+  
+  /* Force square aspect ratio more aggressively */
+  aspect-ratio: 1/1 !important;
+  box-sizing: border-box;
+  
+  /* Prevent overflowing while keeping the circle shape */
+  max-width: min(95vw, 85vh);
+  max-height: min(95vw, 85vh);
+  
+  /* Ensure container doesn't stretch */
+  flex-shrink: 0;
+  flex-grow: 0;
+  
+  canvas {
+    width: 100%;
+    height: 100%;
+    transform-origin: center;
+    aspect-ratio: 1/1;
+  }
+`;
+
+const EntryCount = styled.div`
+  position: absolute;
+  top: -20px;
+  right: 0;
+  background: var(--accent);
+  color: white;
+  padding: 0.5rem 1.25rem;
+  border-radius: 1.5rem;
+  font-size: 1rem;
+  font-weight: bold;
+  z-index: 5;
+  box-shadow: 0 5px 15px rgba(139, 92, 246, 0.3);
+`;
+
+// Define Slow Spin Keyframes
+const slowSpinAnimation = keyframes`
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+`;
+
+// Define Pointer Tick Keyframes (ONLY ONCE)
+const pointerTickAnimation = keyframes`
+  // Ensure translateX is maintained throughout the animation
+  0% { transform: translateX(-50%) rotate(0deg); } 
+  // Change rotation to negative for opposite direction (visually right)
+  50% { transform: translateX(-50%) rotate(-15deg); } 
+  100% { transform: translateX(-50%) rotate(0deg); }
+`;
+
+const WheelCanvas = styled.canvas`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  box-sizing: border-box;
+  transform-origin: center center; 
+  will-change: transform; 
+  background-color: transparent;
+  
+  &.slow-spinning {
+    animation: ${slowSpinAnimation} 60s linear infinite; 
+    animation-play-state: running; /* Default state */
+  }
+`;
+
+const WheelPointer = styled.div`
+  position: absolute;
+  /* Position the pointer container *above* the wheel */
+  top: -40px; /* Adjust as needed */
+  left: 50%;
+  transform: translateX(-50%); 
+  width: 40px;
+  height: 40px; /* Height of the pointer graphic */
+  z-index: 4;
+  /* Remove transform-origin from parent */
+  /* transform-origin: bottom center; */
+
+  &::before { /* The visual arrow part */
+    content: '';
+    position: absolute;
+    width: 0;
+    height: 0;
+    left: 50%;
+    /* Position triangle at the bottom of the container, pointing down */
+    bottom: 0;
+    transform: translateX(-50%); 
+    /* Make triangle point downwards */
+    border-left: 15px solid transparent; 
+    border-right: 15px solid transparent;
+    border-top: 30px solid #e74c3c; /* Use border-top to point down */
+    filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.3)); /* Adjust shadow */
+    /* Set transform origin for the tick animation */
+    transform-origin: center top; /* Rotate around its top point */
+  }
+  
+  &.tick::before {
+     /* Apply animation with correct transform origin */
+     animation: ${pointerTickAnimation} 0.15s ease-out;
+  }
+`;
+
+const WheelCenter = styled.div`
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  background: #2c3e50;
+  border-radius: 50%;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  
+  /* Scale center hub with dedicated size setting */
+  ${props => props.centerSize !== 100 && `
+    width: ${Math.round(60 * (props.centerSize/100))}px;
+    height: ${Math.round(60 * (props.centerSize/100))}px;
+  `}
+  
+  /* Make center larger when many entries to hide potential artifacts */
+  ${props => props.entryCount > 300 && `
+    width: ${Math.max(90, Math.round(60 * (props.centerSize/100)))}px;
+    height: ${Math.max(90, Math.round(60 * (props.centerSize/100)))}px;
+  `}
+  
+  &::after {
+    content: '';
+    position: absolute;
+    width: 30px;
+    height: 30px;
+    background: #ecf0f1;
+    border-radius: 50%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.2);
+    
+    /* Scale inner hub with center size */
+    ${props => props.centerSize !== 100 && `
+      width: ${Math.round(30 * (props.centerSize/100))}px;
+      height: ${Math.round(30 * (props.centerSize/100))}px;
+    `}
+  }
+`;
+
+const WinnerDisplay = styled.div`
+  text-align: center;
+  font-size: 2rem;
+  font-weight: bold;
+  color: white;
+  margin: 0 1.5rem 1.5rem;
+  padding: 1.5rem;
+  background: rgba(30, 64, 175, 0.15);
+  border-radius: var(--radius);
+  display: none;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  position: relative;
+  overflow: hidden;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  
+  &.visible {
+    display: block;
+  }
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: linear-gradient(
+      to bottom right,
+      rgba(30, 64, 175, 0.1) 0%,
+      rgba(59, 130, 246, 0.2) 50%,
+      rgba(30, 64, 175, 0.1) 100%
+    );
+    transform: rotate(45deg);
+    animation: shimmer 3s ease-in-out infinite;
+    z-index: -1;
+  }
+`;
+
+const WinnerActions = styled.div`
+  display: flex;
+  gap: 1rem;
+  margin: 0 1.5rem 1.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  display: none;
+  
+  &.visible {
+    display: flex;
+  }
+  
+  button {
+    flex: 1;
+    min-width: 200px;
+    max-width: 350px;
+  }
+`;
+
+const SubscriberToggle = styled.div`
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  gap: 0.75rem;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  
+  input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+  
+  label {
+    cursor: pointer;
+    font-weight: 500;
+  }
+`;
+
+// Add styled components for settings
+const SettingsButton = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  cursor: pointer;
+  margin-left: 0.5rem;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  
+  svg {
+    color: var(--accent);
+  }
+`;
+
+const SettingsPanel = styled.div`
+  position: fixed;
+  top: ${props => props.top || '60px'};
+  left: ${props => props.left || 'auto'};
+  right: ${props => props.right || 'auto'};
+  background: rgba(15, 23, 42, 0.95);
+  border-radius: 8px;
+  padding: 1rem;
+  width: 250px;
+  backdrop-filter: blur(5px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  transform-origin: ${props => props.right ? 'top right' : 'top left'};
+  animation: fadeInScale 0.2s ease-out;
+  z-index: 9999; // Extremely high z-index to ensure it's always on top
+  display: ${props => props.isVisible ? 'block' : 'none'};
+
+  h4 {
+    margin: 0 0 0.75rem 0;
+    color: white;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+`;
+
+const SettingsRow = styled.div`
+  margin-bottom: 1.25rem;
+  
+  .setting-label {
+    color: white;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    display: block;
+  }
+`;
+
+const SizeSlider = styled.input`
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+  position: relative;
+
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid white;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+  }
+
+  &::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid white;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+  }
+`;
+
+const SizeLabels = styled.div`
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+`;
+
+const SettingsFooter = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+`;
+
+// Make the active mode more visually distinct
+const ModeButton = styled(Button)`
+  &.active {
+    background: var(--accent);
+    color: white;
+    box-shadow: 0 10px 25px rgba(139, 92, 246, 0.3), 0 0 15px rgba(139, 92, 246, 0.2);
+    transform: translateY(-3px);
+    border-color: rgba(139, 92, 246, 0.5);
+    position: relative;
+    font-weight: bold;
+
+    &::after {
+      content: '';
+      position: absolute;
+      top: -2px;
+      left: -2px;
+      right: -2px;
+      bottom: -2px;
+      background: var(--accent);
+      z-index: -1;
+      opacity: 0.3;
+      border-radius: var(--radius-sm);
+      filter: blur(8px);
+      animation: glow 2s ease-in-out infinite;
+    }
+
+    @keyframes glow {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.5; }
+    }
+  }
+`;
+
+// Main component
+const WheelControls = () => {
+  console.log("[DEBUG] WheelControls component starting render");
+  
+  const [wheelEntries, setWheelEntries] = useState([]);
+  const [currentMode, setCurrentMode] = useState('joins'); // Set default mode to joins
+  const [isCollecting, setIsCollecting] = useState(false);
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [winnerIndex, setWinnerIndex] = useState(-1);
+  const [subscriberOnly, setSubscriberOnly] = useState(false);
+  const [statusText, setStatusText] = useState('Mode set to Joins. Click "Start Collecting" to begin.');
+  const [isVisible, setIsVisible] = useState(false);  // New state to track visibility
+  
+  // New state for settings
+  const [settingsPanelVisible, setSettingsPanelVisible] = useState(false);
+  const [wheelSize, setWheelSize] = useState(119); // Larger default wheel size
+  const [textSize, setTextSize] = useState(300); // Much larger default text size
+  const [centerSize, setCenterSize] = useState(210); // Larger default center hub size
+  const [autoSize, setAutoSize] = useState(false); // Auto Size DISABLED (always false)
+  console.log("[DEBUG] autoSize state initialized:", autoSize);
+  
+  const [panelPosition, setPanelPosition] = useState({ top: '60px', left: '20px' });
+  const [spinDuration, setSpinDuration] = useState(15); // Set default to 15 seconds
+  const [showTextShadows, setShowTextShadows] = useState(true); // State for shadow toggle
+  const [slowSpinEnabled, setSlowSpinEnabled] = useState(true); // State for slow spin toggle
+  const [likesPerEntry, setLikesPerEntry] = useState(100); // How many likes for one entry
+  const [coinsPerEntry, setCoinsPerEntry] = useState(1); // How many coins for one entry
+  
+  // Calculate actual wheel size based on percentage - MOVED UP to prevent reference errors
+  const actualWheelSize = Math.max(200, Math.round(1600 * (wheelSize / 100))); // Make max size much larger
+  
+  // Refs
+  const wheelEntriesRef = useRef(wheelEntries);
+  const currentModeRef = useRef(currentMode);
+  const isCollectingRef = useRef(isCollecting);
+  const isSpinningRef = useRef(isSpinning);
+  const wheelCanvasRef = useRef(null);
+  const canvasRef = useRef(null);
+  const startCollectingBtnRef = useRef(null);
+  const spinBtnRef = useRef(null);
+  const resetWheelBtnRef = useRef(null);
+  const subscriberOnlyToggleRef = useRef(null);
+  const winnerDisplayRef = useRef(null);
+  const winnerActionsRef = useRef(null);
+  const likeCounterRef = useRef(0);
+  const settingsButtonRef = useRef(null);
+  const settingsPanelRef = useRef(null);
+  const sizeSliderRef = useRef(null);
+  const wheelContainerRef = useRef(null);
+  const drawingInProgressRef = useRef(false);
+  const tabActiveRef = useRef(false);
+  const visibilityTimerRef = useRef(null); // For visibility checks
+  const slowSpinFrameRef = useRef(null); // Ref for slow spin animation frame
+  const fastSpinFrameRef = useRef(null); // Ref for fast spin animation frame
+  const rotationRef = useRef(0); // Ref to store current rotation (degrees)
+  const velocityRef = useRef(0); // Ref to store current velocity (degrees/sec)
+  const lastFrameTimeRef = useRef(performance.now()); // Ref for delta time calculation
+  const pointerRef = useRef(null); 
+  const prevAngleAtPointerRef = useRef(0); // Add ref for previous pointer angle
+  const batchUpdateTimeoutRef = useRef(null); 
+  const batchedEntriesRef = useRef([]); // Ref to store entries before batch update
+  const frictionRef = useRef(0.985); // Add ref for calculated friction, default value
+  const renderLockRef = useRef(false); // Prevent rendering during resize 
+  const autoSizeTimerRef = useRef(null); // Track auto-size timer for cleanup
+  const lastAutoSizeUpdateRef = useRef(0); // Add ref for tracking last auto-size update time
+  
+  // Add new refs for double buffering and preventing render flickers
+  const offscreenCanvasRef = useRef(document.createElement('canvas'));
+  const pendingSizeUpdateRef = useRef(false);
+  
+  // Add refs to track gift and like events per user
+  const userGiftTrackingRef = useRef({}); // Track gifts per user
+  const userLikeTrackingRef = useRef({}); // Track likes per user
+  const giftSessionTimeoutRef = useRef({}); // Track timeouts for gift sessions
+  const likeSessionTimeoutRef = useRef({}); // Track timeouts for like sessions
+  const giftSequenceProcessingTimerRef = useRef({}); // Timer to process sequence after inactivity
+
+  // Update ref for wheelEntries so animation callbacks can access the latest values
+  useEffect(() => {
+    wheelEntriesRef.current = wheelEntries;
+  }, [wheelEntries]);
+  
+  // Update ref for currentMode
+  useEffect(() => {
+    currentModeRef.current = currentMode;
+  }, [currentMode]);
+  
+  // Update ref for isCollecting
+  useEffect(() => {
+    isCollectingRef.current = isCollecting;
+  }, [isCollecting]);
+
+  // Update ref when state changes (important for closures)
+  useEffect(() => {
+    isSpinningRef.current = isSpinning;
+    console.log(`[Effect] isSpinning state: ${isSpinning}, isSpinningRef updated to: ${isSpinningRef.current}`); // Add debug log
+  }, [isSpinning]);
+
+  // Wrap drawWheel in useCallback
+  const drawWheel = useCallback((canvas = canvasRef.current, entriesToDraw = wheelEntriesRef.current) => {
+    if (!canvas) {
+        console.error("[drawWheel] No canvas element found!");
+        return;
+    }
+    
+    // Skip drawing if render is locked (prevents flicker during auto-resize)
+    if (renderLockRef.current) {
+        console.log("[drawWheel] Render lock active, skipping draw to prevent flicker");
+        return;
+    }
+    
+    const entries = entriesToDraw; 
+    console.log(`[drawWheel] Drawing wheel. Canvas dimensions: ${canvas.width}x${canvas.height}, Entries count: ${entries.length}, Text Size: ${textSize}%, Show Shadows: ${showTextShadows}`);
+
+    // Use isVisible from component scope (dependency of useCallback)
+    if (!isVisible && !isSpinningRef.current) { 
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      console.log("[drawWheel] Wheel not visible and not spinning, clearing canvas.");
+      return;
+    }
+    
+    if (drawingInProgressRef.current) {
+        console.warn("[drawWheel] Draw already in progress, skipping.");
+        return;
+    }
+    drawingInProgressRef.current = true;
+    
+    try {
+      const ctx = canvas.getContext('2d', { alpha: true }); // Change to alpha: true for transparent background
+      const width = canvas.width;
+      const height = canvas.height;
+
+      // Log if dimensions are zero
+      if (width === 0 || height === 0) {
+          console.error(`[drawWheel] Canvas dimensions are zero (${width}x${height}), cannot draw.`);
+          drawingInProgressRef.current = false;
+          return;
+      }
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.min(width, height) / 2 - 10;
+      
+      // Clear the canvas with transparent background
+      ctx.clearRect(0, 0, width, height);
+      
+      const segments = Math.max(1, entries.length); 
+      const anglePerSegmentRadians = (Math.PI * 2) / segments;
+      
+      // Log segment info
+      console.log(`[drawWheel] Drawing ${segments} segment(s). Angle per segment: ${(anglePerSegmentRadians * 180 / Math.PI).toFixed(2)} deg`);
+
+      // Draw outer ring
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = '#2c3e50';
+      ctx.stroke();
+      
+      // Clear any lingering shadows or effects before drawing segments
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      
+      // Draw segments
+      for (let i = 0; i < segments; i++) {
+        // Calculate angles relative to the FIXED starting point (top = -PI/2)
+        const startAngle = i * anglePerSegmentRadians - Math.PI / 2;
+        const endAngle = startAngle + anglePerSegmentRadians;
+        
+        // ---- Important fix for high entry counts ----
+        // For very high segment counts, avoid precision issues by not drawing to exact center
+        const drawToCenter = segments <= 300;
+        
+        // Draw segment path (using fixed startAngle/endAngle)
+        ctx.beginPath();
+        
+        if (drawToCenter) {
+          // Traditional drawing method for fewer segments
+          ctx.moveTo(centerX, centerY);
+          ctx.arc(centerX, centerY, radius - 6, startAngle, endAngle);
+          ctx.lineTo(centerX, centerY);
+        } else {
+          // For many segments, create truncated segments that don't meet at center
+          // This prevents the center distortion issue
+          const innerRadius = radius * 0.15; // Small but visible inner radius
+          
+          // Start at inner point
+          const innerStartX = centerX + Math.cos(startAngle) * innerRadius;
+          const innerStartY = centerY + Math.sin(startAngle) * innerRadius;
+          ctx.moveTo(innerStartX, innerStartY);
+          
+          // Draw outer arc
+          ctx.arc(centerX, centerY, radius - 6, startAngle, endAngle);
+          
+          // Draw to inner radius at end angle
+          const innerEndX = centerX + Math.cos(endAngle) * innerRadius;
+          const innerEndY = centerY + Math.sin(endAngle) * innerRadius;
+          ctx.lineTo(innerEndX, innerEndY);
+          
+          // Draw inner arc (in reverse)
+          ctx.arc(centerX, centerY, innerRadius, endAngle, startAngle, true);
+        }
+        
+        // Close the path
+        ctx.closePath();
+      
+      // Fill with color
+        // Increase color variance for better visibility at high entry counts
+        const hue = (i * 137.508) % 360; 
+        // Vary saturation and lightness slightly for adjacent segments
+        const saturation = segments > 80 ? 80 : 70; // Boost saturation for many entries
+        // Alternate lightness for better segment distinction (especially at 100+ entries)
+        const lightness = segments > 80 ? (i % 2 === 0 ? 50 : 40) : 45;
+      ctx.fillStyle = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+      ctx.fill();
+        
+        // Special handling for huge numbers of entries to prevent distortion
+        if (segments > 300) {
+          ctx.lineWidth = 0.3; // Extremely thin but consistent borders
+          ctx.strokeStyle = 'rgba(0,0,0,0.3)'; // Very subtle borders
+        } else {
+          // Normal border handling for fewer entries
+          ctx.lineWidth = segments > 200 ? 0.5 : (segments > 100 ? 0.75 : (segments > 50 ? 1 : 2));
+          ctx.strokeStyle = segments > 100 ? 'rgba(0,0,0,0.5)' : '#1a202c';
+        }
+        ctx.stroke();
+        
+        // Add text if we have an entry for this segment
+        if (i < entries.length) {
+          // Calculate midpoint angle of segment (relative to fixed start)
+          const midAngle = startAngle + (anglePerSegmentRadians / 2);
+        
+          // Define text properties
+          const outerRadius = radius * 0.85; 
+          const innerRadius = segments > 300 ? radius * 0.45 : radius * 0.35; // Move text further from center with many entries
+        
+          // Calculate diagonal line along which to place text
+          const outerX = centerX + Math.cos(midAngle) * outerRadius;
+          const outerY = centerY + Math.sin(midAngle) * outerRadius;
+          const innerX = centerX + Math.cos(midAngle) * innerRadius;
+          const innerY = centerY + Math.sin(midAngle) * innerRadius;
+        
+          // Calculate angle for the text (perpendicular to radius)
+          const textAngle = Math.atan2(innerY - outerY, innerX - outerX);
+        
+          // Calculate available width for text 
+          const diagonalLength = Math.sqrt(
+            Math.pow(outerX - innerX, 2) + 
+            Math.pow(outerY - innerY, 2)
+          );
+        
+          // Get the entry name
+          const entry = entries[i];
+          const displayName = entry.isSubscriber ? '⭐ ' + entry.name : entry.name;
+          console.log(`[drawWheel] Drawing text for segment ${i}: ${displayName}`);
+        
+          // Configure text properties with strong independent size control
+          ctx.save();
+          
+          // Create a very direct size calculation from the slider value
+          const fontSize = Math.max(8, Math.round(16 * (textSize / 100)));
+          
+          // Log font size calculation in detail
+          console.log(`[Text] Segment ${i}, textSize: ${textSize}%, calculated fontSize: ${fontSize}px`);
+          
+          // Set font directly with no other scaling factors
+          ctx.font = `bold ${fontSize}px Inter, sans-serif`;
+          ctx.fillStyle = 'white';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          
+          // Apply shadow based on state AND segment count
+          console.log(`[drawWheel segment ${i}] Applying shadow? ${showTextShadows} && ${segments} <= 75 = ${showTextShadows && segments <= 75}`); // Log shadow decision
+          if (showTextShadows && segments <= 75) { 
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = segments <= 50 ? 4 : 2; 
+            ctx.shadowOffsetX = 1;
+            ctx.shadowOffsetY = 1;
+          } else {
+            ctx.shadowColor = 'transparent'; 
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+          }
+        
+          // Measure text
+          const textWidth = ctx.measureText(displayName).width;
+        
+          // Calculate available space
+          const availableSpace = diagonalLength * 0.8;
+        
+          // Determine if text needs truncating
+          let finalText = displayName;
+          if (textWidth > availableSpace && finalText.length > 3) { // Ensure we don't truncate too much
+            const ellipsis = '...';
+            const ellipsisWidth = ctx.measureText(ellipsis).width;
+            let truncatedText = '';
+            let measuredWidth = 0;
+          
+            for (let j = 0; j < displayName.length; j++) {
+              const char = displayName[j];
+              const charWidth = ctx.measureText(char).width;
+            
+              if (measuredWidth + charWidth + ellipsisWidth <= availableSpace) {
+                truncatedText += char;
+                measuredWidth += charWidth;
+              } else {
+                break;
+              }
+            }
+          
+            finalText = truncatedText + ellipsis;
+          }
+        
+          // Calculate text position at the middle of diagonal line
+          const textX = (outerX + innerX) / 2;
+          const textY = (outerY + innerY) / 2;
+        
+          // Position and rotate text
+          ctx.translate(textX, textY);
+          ctx.rotate(textAngle);
+        
+          // Draw text
+          ctx.fillText(finalText, 0, 0);
+        
+          // Restore context
+          ctx.restore();
+        }
+      }
+    } finally {
+      drawingInProgressRef.current = false;
+    }
+  }, [isVisible, showTextShadows, textSize]);
+  
+  // Helper to set rotation transform directly
+  const applyRotation = (degrees) => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.style.transform = `rotate(${degrees}deg)`;
+    }
+  };
+
+  // --- Slow Spin Animation Loop --- 
+  const slowSpinLoop = useCallback((timestamp) => {
+    if (!isCollectingRef.current || !isVisible || document.hidden) {
+      slowSpinFrameRef.current = null; // Stop the loop if conditions aren't met
+      return;
+    }
+
+    const deltaTime = (timestamp - lastFrameTimeRef.current) / 1000; // Time in seconds
+    lastFrameTimeRef.current = timestamp;
+
+    const slowSpeed = 10; // Degrees per second
+    rotationRef.current = (rotationRef.current + slowSpeed * deltaTime) % 360;
+    applyRotation(rotationRef.current);
+
+    slowSpinFrameRef.current = requestAnimationFrame(slowSpinLoop);
+  }, [isVisible]); // Dependency on isVisible to re-create callback if visibility changes
+
+  // Define cleanupResources before it's used in other effects
+  const cleanupResources = useCallback(() => {
+    console.log("[cleanupResources] Cleaning up animation frames and timers.");
+    // Cancel any active animations
+    if (slowSpinFrameRef.current) {
+      cancelAnimationFrame(slowSpinFrameRef.current);
+      slowSpinFrameRef.current = null;
+    }
+    if (fastSpinFrameRef.current) {
+      cancelAnimationFrame(fastSpinFrameRef.current);
+      fastSpinFrameRef.current = null;
+    }
+    
+    // Clear any timers (like the old visibility timer, if any refs remain)
+    // if (visibilityTimerRef.current) { ... } // Example if timer ref was still used
+    
+    // Optional: Release canvas context if beneficial (might not be needed with direct transform)
+    /*
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx && typeof ctx.reset === 'function') {
+        try { ctx.reset(); } catch (e) {}
+      }
+    }
+    */
+  }, []); // Empty dependency array as it only uses refs
+
+  // Effect to start/stop slow spin based on state
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    console.log(`[Effect Slow Spin Check] Enabled: ${slowSpinEnabled}, isVisible: ${isVisible}, isSpinning: ${isSpinning}, winnerIndex: ${winnerIndex}`);
+    // Start slow spin if ENABLED, visible, not fast-spinning, and no winner shown
+    if (slowSpinEnabled && isVisible && !isSpinning && winnerIndex === -1) { 
+        console.log("[Effect] Adding .slow-spinning class");
+        canvas.classList.add('slow-spinning');
+    } else {
+       // Remove class if any condition is false
+       console.log("[Effect] Removing .slow-spinning class");
+       canvas.classList.remove('slow-spinning');
+    }
+    // Add slowSpinEnabled to dependencies
+  }, [isVisible, isSpinning, winnerIndex, slowSpinEnabled]);
+
+  // Redraw when entries change and component is visible
+  useEffect(() => {
+      const canvas = canvasRef.current;
+      if (isVisible && canvas) {
+          console.log(`[Effect wheelEntries] State length: ${wheelEntries.length}. Redrawing wheel.`);
+          
+          // SIMPLIFIED: Just redraw. CSS animation continues independently.
+          drawWheel(canvas, wheelEntries); 
+      }
+  }, [wheelEntries, isVisible, drawWheel]);
+
+  // Load saved settings from localStorage on mount
+  useEffect(() => {
+    const savedSize = localStorage.getItem('wheelSize');
+    if (savedSize) {
+      setWheelSize(parseInt(savedSize, 10));
+    }
+    const savedTextSize = localStorage.getItem('textSize');
+    if (savedTextSize) {
+      setTextSize(parseInt(savedTextSize, 10));
+    }
+    const savedCenterSize = localStorage.getItem('centerSize');
+    if (savedCenterSize) {
+      setCenterSize(parseInt(savedCenterSize, 10));
+    }
+    // We read the saved setting but ignore it - autoSize is permanently disabled
+    // const savedAutoSize = localStorage.getItem('autoSize');
+    // if (savedAutoSize !== null) {
+    //  setAutoSize(savedAutoSize === 'true');
+    // }
+    const savedDuration = localStorage.getItem('spinDuration');
+    if (savedDuration) {
+      setSpinDuration(parseInt(savedDuration, 10));
+    }
+    const savedShowShadows = localStorage.getItem('showTextShadows');
+    if (savedShowShadows !== null) {
+      setShowTextShadows(savedShowShadows === 'true'); // Convert string back to boolean
+    }
+    const savedSlowSpin = localStorage.getItem('slowSpinEnabled');
+    if (savedSlowSpin !== null) {
+      setSlowSpinEnabled(savedSlowSpin === 'true');
+    }
+    const savedLikesPerEntry = localStorage.getItem('likesPerEntry');
+    if (savedLikesPerEntry) {
+      setLikesPerEntry(parseInt(savedLikesPerEntry, 10));
+    }
+    const savedCoinsPerEntry = localStorage.getItem('coinsPerEntry');
+    if (savedCoinsPerEntry) {
+      setCoinsPerEntry(parseInt(savedCoinsPerEntry, 10));
+    }
+    
+    // Find the wheel tab content container and increase its min-height
+    const wheelTabContent = document.querySelector('.wheel-tab-content');
+    if (wheelTabContent) {
+      wheelTabContent.style.minHeight = '1200px'; // Allow plenty of room for large wheels
+    }
+    
+    // Setup visibility observer for the tab
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach(entry => {
+          const isNowVisible = entry.isIntersecting;
+          if (isVisible !== isNowVisible) {
+            setIsVisible(isNowVisible);
+            
+            if (isNowVisible) {
+              console.log('Wheel is visible, requesting one-time render');
+              applyRotation(rotationRef.current); 
+              drawWheel(); 
+            } else {
+              console.log('Wheel is not visible, disabling rendering');
+              // Stop slow spin explicitly when not visible
+              if (slowSpinFrameRef.current) {
+                 cancelAnimationFrame(slowSpinFrameRef.current);
+                 slowSpinFrameRef.current = null;
+              }
+              // We don't cancel fast spin here, assuming it continues off-screen?
+              // Or cancel fast spin too if required:
+              // if (fastSpinFrameRef.current) cancelAnimationFrame(fastSpinFrameRef.current); ... etc
+            }
+          }
+        });
+      },
+      { threshold: 0.1 } 
+    );
+    
+    // Also listen for tab changes
+    const handleTabChange = (e) => {
+      if (e.target && e.target.closest) {
+        const clickedTab = e.target.closest('.tab-button');
+        if (clickedTab) {
+          const isWheelTab = clickedTab.getAttribute('data-tab') === 'wheel';
+          if (isVisible !== isWheelTab) {
+             setIsVisible(isWheelTab);
+             tabActiveRef.current = isWheelTab;
+          
+             if (isWheelTab) {
+               // Switched TO wheel tab
+               console.log("[handleTabChange] Switched TO wheel tab, applying rotation/draw");
+               applyRotation(rotationRef.current);
+               drawWheel();
+             } else {
+               // Switched AWAY from wheel tab
+               console.log("[handleTabChange] Switched AWAY from wheel tab, cleaning up");
+               cleanupResources(); 
+             }
+          }
+        }
+      }
+    };
+    
+    document.addEventListener('click', handleTabChange);
+    
+    // Initialize visibility based on initial state
+    setTimeout(() => {
+      const wheelTab = document.querySelector('.tab-content[id="wheel"].active');
+      const isWheelVisible = !!wheelTab;
+      // Only set if different from current state
+      if (isVisible !== isWheelVisible) {
+         setIsVisible(isWheelVisible);
+         tabActiveRef.current = isWheelVisible;
+      }
+      
+      if (wheelContainerRef.current) {
+        observer.observe(wheelContainerRef.current);
+      }
+      
+      // Initial check for redraw needed
+      if (isWheelVisible) {
+        applyRotation(rotationRef.current);
+        drawWheel(); // Draw immediately on initial load if visible
+      }
+    }, 500);
+    
+    return () => {
+      document.removeEventListener('click', handleTabChange);
+      observer.disconnect();
+    };
+  }, [cleanupResources]); 
+
+  // Save auto size setting when it changes
+  useEffect(() => {
+    localStorage.setItem('autoSize', 'false'); // Always save as 'false'
+  }, [autoSize]);
+
+  // Save wheel size when it changes
+  useEffect(() => {
+    localStorage.setItem('wheelSize', wheelSize.toString());
+    
+    // Directly update canvas dimensions if visible
+    if (canvasRef.current && isVisible) {
+      const newActualSize = Math.max(200, Math.round(1600 * (wheelSize / 100)));
+      canvasRef.current.width = newActualSize;
+      canvasRef.current.height = newActualSize;
+      
+      // Redraw immediately after resize
+      drawWheel(canvasRef.current, wheelEntriesRef.current);
+    }
+  }, [wheelSize, isVisible, drawWheel]);
+
+  // Save text size when it changes
+  useEffect(() => {
+    localStorage.setItem('textSize', textSize.toString());
+    
+    // Trigger redraw when text size changes and wheel is visible
+    if (canvasRef.current && isVisible) {
+      drawWheel(canvasRef.current, wheelEntriesRef.current);
+    }
+  }, [textSize, isVisible, drawWheel]);
+  
+  // Save center size when it changes
+  useEffect(() => {
+    localStorage.setItem('centerSize', centerSize.toString());
+    // No canvas redraw needed as center is a separate DOM element
+  }, [centerSize]);
+
+  // Save spin duration when it changes
+  useEffect(() => {
+    localStorage.setItem('spinDuration', spinDuration.toString());
+  }, [spinDuration]);
+
+  // Save shadow toggle state when it changes
+  useEffect(() => {
+    localStorage.setItem('showTextShadows', showTextShadows.toString());
+    
+    // Redraw the wheel when shadow setting changes and wheel is visible
+    if (canvasRef.current && isVisible) {
+      drawWheel(canvasRef.current, wheelEntriesRef.current);
+    }
+  }, [showTextShadows, isVisible, drawWheel]);
+
+  // Save slow spin toggle state when it changes
+  useEffect(() => {
+    localStorage.setItem('slowSpinEnabled', slowSpinEnabled.toString());
+  }, [slowSpinEnabled]);
+  
+  // Save likes per entry setting when it changes
+  useEffect(() => {
+    localStorage.setItem('likesPerEntry', likesPerEntry.toString());
+  }, [likesPerEntry]);
+  
+  // Save coins per entry setting when it changes
+  useEffect(() => {
+    localStorage.setItem('coinsPerEntry', coinsPerEntry.toString());
+  }, [coinsPerEntry]);
+
+  // Set up monitoring for 200 entries before React renders happen
+  useEffect(() => {
+    // Setup a MutationObserver to track entries collection and resize
+    // at exactly 200 entries before any React rendering occurs
+    let wheelSizeAdjusted = false;
+    
+    const checkAndAdjustSize = () => {
+      if (wheelEntriesRef.current.length === 200 && !wheelSizeAdjusted) {
+        console.log('[Auto-Size] Detected 200 entries, adjusting wheel size to 200%');
+        wheelSizeAdjusted = true;
+        
+        // Apply the same size calculation logic used during render
+        if (canvasRef.current) {
+          const newActualSize = Math.max(200, Math.round(1600 * (200/100)));
+          canvasRef.current.width = newActualSize;
+          canvasRef.current.height = newActualSize;
+        }
+        
+        // Set state *after* we've already adjusted the canvas size
+        setWheelSize(200);
+      }
+      
+      // Reset the flag if we move away from 200 entries
+      if (wheelEntriesRef.current.length !== 200) {
+        wheelSizeAdjusted = false;
+      }
+    };
+    
+    // We'll use an interval that checks entry count directly from the ref
+    // This happens outside of React's rendering cycle
+    const intervalId = setInterval(checkAndAdjustSize, 100);
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []);
+  
+  // Remove the previous useEffect that was causing flickering
+  // (the one that watched wheelEntries.length)
+
+  // Add essential wheel functions
+  const handleModeSelection = (mode) => {
+    setCurrentMode(mode);
+    setStatusText(`Mode selected: ${mode}. Click "Start Collecting" to begin.`);
+    resetWheel();
+  };
+
+  const handleStartCollecting = () => {
+    if (!currentMode) {
+      alert('Please select a mode first!');
+      return;
+    }
+    
+    setIsCollecting(true);
+    setStatusText(`Collecting entries for ${currentMode}...`);
+    setWheelEntries([]);
+  };
+  
+  // Add a function to debug wheel canvas status
+  const debugWheelCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      console.error("Canvas element missing in debugWheelCanvas");
+      return;
+    }
+    
+    // Get computed style to verify transforms are working
+    const computedStyle = window.getComputedStyle(canvas);
+    console.log("Canvas computed style:", {
+      transform: computedStyle.transform,
+      width: computedStyle.width,
+      height: computedStyle.height,
+      display: computedStyle.display,
+      visibility: computedStyle.visibility,
+      transformOrigin: computedStyle.transformOrigin
+    });
+    
+    // Test if transform works
+    const initialTransform = canvas.style.transform;
+    canvas.style.transform = 'rotate(45deg)';
+    
+    // Force reflow
+    void canvas.offsetWidth;
+    
+    // Check if transform applied
+    setTimeout(() => {
+      console.log("Test rotation applied:", canvas.style.transform);
+      // Reset transform
+      canvas.style.transform = initialTransform;
+    }, 10);
+  }
+  
+  // Alternative implementation using direct DOM rotation instead of styled-components
+  const directRotateWheel = (degrees) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    // Use direct DOM manipulation with translate3d for hardware acceleration
+    canvas.style.transform = `rotate(${degrees}deg)`;
+    // Force browser to acknowledge the transform
+    void canvas.offsetWidth;
+  };
+
+  // --- Fast Spin Animation Loop ---
+  const fastSpinLoop = useCallback((timestamp) => {
+    const canvas = canvasRef.current;
+    if (!isSpinningRef.current || !canvas) {
+      fastSpinFrameRef.current = null; // Ensure loop stops if state changes unexpectedly
+      return;
+    }
+
+    const deltaTime = (timestamp - lastFrameTimeRef.current) / 1000; // Time in seconds
+    lastFrameTimeRef.current = timestamp;
+    
+    // Physics parameters
+    const minVelocityThreshold = 2; // Keep this fixed
+    const friction = frictionRef.current; // Use the calculated friction from the ref
+    
+    // Apply friction 
+    velocityRef.current *= Math.pow(friction, deltaTime * 60); 
+
+    // Update rotation
+    const currentRotation = rotationRef.current + velocityRef.current * deltaTime;
+    rotationRef.current = currentRotation;
+    applyRotation(currentRotation);
+
+    // --- Physics-Based Pointer Tick Trigger --- 
+    const pointerEl = pointerRef.current;
+    const currentEntries = wheelEntriesRef.current; 
+    const segments = currentEntries.length;
+
+    if (pointerEl && segments > 0 && velocityRef.current > 1) { // Only tick if moving noticeably
+        const anglePerSegment = 360 / segments;
+        const currentAngleAtPointer = (360 - (currentRotation % 360)) % 360;
+        const prevAngleAtPointer = prevAngleAtPointerRef.current;
+        
+        // Check if any border angle was crossed between previous and current angle
+        let borderCrossed = false;
+        const rotationDelta = velocityRef.current * deltaTime; // How much we rotated this frame
+        const direction = Math.sign(rotationDelta); // 1 for clockwise, -1 for counter-clockwise
+
+        // Simple check: if the segment index changed, a border was crossed
+        const currentSegmentIndex = Math.floor(currentAngleAtPointer / anglePerSegment);
+        const prevSegmentIndex = Math.floor(prevAngleAtPointer / anglePerSegment);
+
+        if (currentSegmentIndex !== prevSegmentIndex) {
+             // Handle wrap-around case explicitly if needed, but index change is usually sufficient
+             // E.g., if prev is 358 (index N-1) and current is 2 (index 0), index changed.
+             borderCrossed = true;
+        }
+        
+        if (borderCrossed) {
+            console.log(`[Tick Trigger - Border Cross] Angle: ${currentAngleAtPointer.toFixed(2)}, Prev: ${prevAngleAtPointer.toFixed(2)}, Vel: ${velocityRef.current.toFixed(2)}`);
+            pointerEl.classList.remove('tick');
+            void pointerEl.offsetWidth; 
+            pointerEl.classList.add('tick');
+            // No cooldown needed here
+        }
+
+        // Update previous angle for next frame
+        prevAngleAtPointerRef.current = currentAngleAtPointer;
+        
+    } else if (pointerEl) {
+        // Ensure tick class is removed when not moving or no segments
+        if (pointerEl.classList.contains('tick')) {
+            pointerEl.classList.remove('tick');
+        }
+        // Reset previous angle when stopped to prevent false trigger on restart
+        prevAngleAtPointerRef.current = (360 - (rotationRef.current % 360)) % 360; 
+    }
+    // --- End Pointer Tick Trigger --- 
+
+    // Check if wheel has stopped
+    if (velocityRef.current < minVelocityThreshold) {
+      const finalRotation = rotationRef.current;
+      console.log(`[fastSpinLoop] Wheel stopped. Final Rotation: ${finalRotation.toFixed(2)}`);
+      velocityRef.current = 0; 
+      fastSpinFrameRef.current = null; 
+      if (pointerEl) pointerEl.classList.remove('tick'); 
+      
+      // --- Winner Determination (Logging Added) --- 
+      const currentEntries = wheelEntriesRef.current; // Use ref
+      const segments = currentEntries.length;
+      console.log(`[Winner Calc] Segments: ${segments}`);
+      
+      let winningSegmentIndex = -1;
+      if (segments > 0) {
+          const anglePerSegment = 360 / segments; 
+          const finalAngleAtPointer = (360 - (finalRotation % 360)) % 360;
+          winningSegmentIndex = Math.floor(finalAngleAtPointer / anglePerSegment);
+          console.log(`[Winner Calc] Angle Per Segment: ${anglePerSegment.toFixed(2)}`);
+          console.log(`[Winner Calc] Final Angle @ Pointer: ${finalAngleAtPointer.toFixed(2)}`);
+          console.log(`[Winner Calc] Calculated Winning Index: ${winningSegmentIndex}`);
+      } else {
+           console.log("[Winner Calc] No segments, no winner.");
+      }
+      
+      // Validate index
+      if (winningSegmentIndex < 0 || winningSegmentIndex >= segments) {
+           console.error(`[Winner Calc] Invalid winner index calculated: ${winningSegmentIndex}`);
+           winningSegmentIndex = -1; // Set to invalid if out of bounds
+      }
+
+      // --- Update State & UI --- 
+      setWinnerIndex(winningSegmentIndex);
+      setIsSpinning(false); 
+
+      const winnerDisplay = winnerDisplayRef.current;
+      const winnerActions = winnerActionsRef.current;
+      const resetWheelBtn = resetWheelBtnRef.current;
+
+      if (winningSegmentIndex !== -1 && winnerDisplay) {
+          const winner = currentEntries[winningSegmentIndex];
+          
+          // Count how many entries this winner has in the wheel
+          const winnerEntriesCount = currentEntries.filter(entry => 
+              entry.name === winner.name
+          ).length;
+          
+          // Create message with entry count
+          const entriesText = winnerEntriesCount === 1 
+              ? "They had 1 entry" 
+              : `They had ${winnerEntriesCount} entries`;
+          
+          // Add profile picture to winner announcement
+          winnerDisplay.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 12px;">
+              <img src="${winner.avatar || 'https://www.tiktok.com/favicon.ico'}" 
+                alt="${winner.name}" 
+                style="width: 64px; height: 64px; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 8px rgba(0,0,0,0.2);"
+              />
+            </div>
+            🎉 Winner: ${winner.name} 🎉
+            <br>
+            <span style="font-size: 1.2rem; opacity: 0.9;">${entriesText}</span>
+          `;
+          
+          console.log(`[Winner Calc] Displaying Winner: ${winner.name} with ${winnerEntriesCount} entries`);
+          winnerDisplay.style.display = 'block';
+          if (winnerActions) winnerActions.style.display = 'flex';
+          
+          // Auto-scroll to winner announcement
+          setTimeout(() => {
+            winnerDisplay.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 300);
+        } else if (winnerDisplay) {
+          winnerDisplay.textContent = winningSegmentIndex === -1 ? "No Winner (Empty Wheel?)" : "Error determining winner!";
+          winnerDisplay.style.display = 'block';
+        }
+
+        if (resetWheelBtn) resetWheelBtn.disabled = false;
+        setStatusText('Winner selected! Click "Reset" to start over or choose an action below.');
+        
+    } else {
+        fastSpinFrameRef.current = requestAnimationFrame(fastSpinLoop);
+    }
+  }, []);
+
+  const handleSpin = () => {
+    if (wheelEntries.length === 0) {
+      alert('No entries to spin!');
+      return;
+    }
+    
+    console.log("[handleSpin] Start Spin - Current Rotation:", rotationRef.current);
+    
+    // Cancel slow spin if it's running
+    if (slowSpinFrameRef.current) {
+      console.log("[handleSpin] Cancelling slow spin loop");
+      cancelAnimationFrame(slowSpinFrameRef.current);
+      slowSpinFrameRef.current = null;
+    }
+    // Cancel any previous fast spin (shouldn't be needed, but safe)
+    if (fastSpinFrameRef.current) {
+      cancelAnimationFrame(fastSpinFrameRef.current);
+      fastSpinFrameRef.current = null;
+    }
+
+    // --- Stop CSS Slow Spin & Get Current Rotation --- 
+    applyRotation(rotationRef.current); 
+    void canvasRef.current.offsetWidth; 
+    
+    // --- Calculate Friction based on Duration --- 
+    const targetDuration = spinDuration; // Use state value (seconds)
+    const initialVelocity = 1500; // Use a relatively fixed high initial velocity
+    const minVelocity = 2; // Must match minVelocityThreshold used in fastSpinLoop
+    
+    // Formula: f = (V_min / V_0)^(1 / (T * 60))
+    // Add safety checks for edge cases
+    let calculatedFriction = 0.985; // Default fallback
+    if (targetDuration > 0 && initialVelocity > minVelocity) {
+      const base = minVelocity / initialVelocity;
+      const exponent = 1 / (targetDuration * 60);
+      // Math.pow can return NaN if base is negative (shouldn't happen here) or exponent is weird
+      const potentialFriction = Math.pow(base, exponent);
+      // Friction must be < 1 and > 0 (and realistically > ~0.9)
+      if (!isNaN(potentialFriction) && potentialFriction > 0.9 && potentialFriction < 1) {
+         calculatedFriction = potentialFriction;
+      }
+    }
+    frictionRef.current = calculatedFriction;
+    console.log(`[handleSpin] Target Duration: ${targetDuration}s, Initial Velocity: ${initialVelocity}, Calculated Friction: ${frictionRef.current.toFixed(5)}`);
+    
+    // --- Set State & UI --- 
+    setIsSpinning(true); 
+    isSpinningRef.current = true; 
+    setIsCollecting(false);
+    setStatusText('Spinning...');
+    
+    // Get element references (buttons mostly)
+    const startCollectingBtn = startCollectingBtnRef.current;
+    const spinBtn = spinBtnRef.current;
+    const resetWheelBtn = resetWheelBtnRef.current;
+    const winnerDisplay = winnerDisplayRef.current;
+    const winnerActions = winnerActionsRef.current;
+    
+    // Disable buttons during spin
+    if (startCollectingBtn) startCollectingBtn.disabled = true;
+    if (spinBtn) spinBtn.disabled = true;
+    if (resetWheelBtn) resetWheelBtn.disabled = true;
+    
+    // Hide winner display
+    if (winnerDisplay) winnerDisplay.style.display = 'none';
+    if (winnerActions) winnerActions.style.display = 'none';
+    
+    // Ensure canvas exists (redundant check, but safe)
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      console.error("Canvas element is missing during spin start!");
+      setIsSpinning(false); 
+      isSpinningRef.current = false;
+      setStatusText('Error: Canvas not found!');
+      // Re-enable buttons
+      if (startCollectingBtn) startCollectingBtn.disabled = false;
+      if (spinBtn) spinBtn.disabled = wheelEntries.length === 0;
+      if (resetWheelBtn) resetWheelBtn.disabled = false;
+      return;
+    }
+    
+    // --- Start JS Fast Spin --- 
+    velocityRef.current = initialVelocity; // Set the fixed initial velocity
+    lastFrameTimeRef.current = performance.now();
+    console.log(`[handleSpin] Initial velocity set to: ${velocityRef.current}`);
+    fastSpinFrameRef.current = requestAnimationFrame(fastSpinLoop);
+  };
+
+  const resetWheel = () => {
+    // Clear any ongoing animation
+    if (fastSpinFrameRef.current) {
+      cancelAnimationFrame(fastSpinFrameRef.current);
+      fastSpinFrameRef.current = null;
+    }
+    
+    // Reset the wheel state
+    setWheelEntries([]);
+    setIsCollecting(false);
+    setIsSpinning(false);
+    setWinnerIndex(-1);
+    setStatusText(`Mode set to ${currentMode}. Click "Start Collecting" to begin.`);
+    
+    // Reset UI elements
+    const canvas = canvasRef.current;
+    const startCollectingBtn = startCollectingBtnRef.current;
+    const spinBtn = spinBtnRef.current;
+    const resetWheelBtn = resetWheelBtnRef.current;
+    const winnerDisplay = winnerDisplayRef.current;
+    const winnerActions = winnerActionsRef.current;
+    
+    if (canvas) {
+      canvas.style.transform = 'rotate(0deg)';
+    }
+    
+    if (startCollectingBtn) startCollectingBtn.disabled = false;
+    if (spinBtn) spinBtn.disabled = true;
+    if (resetWheelBtn) resetWheelBtn.disabled = false;
+    
+    if (winnerDisplay) winnerDisplay.style.display = 'none';
+    if (winnerActions) winnerActions.style.display = 'none';
+    
+    // Redraw the empty wheel only if visible
+    if (isVisible) {
+      drawWheel();
+    }
+  };
+
+  const handleReset = () => {
+    resetWheel();
+    setStatusText('Select a mode and click "Start Collecting" to begin');
+  };
+
+  const handleRemoveWinner = () => {
+    if (winnerIndex >= 0 && winnerIndex < wheelEntries.length) {
+      const newEntries = [...wheelEntries];
+      newEntries.splice(winnerIndex, 1);
+      setWheelEntries(newEntries);
+      
+      // Get elements from refs
+      const winnerDisplay = winnerDisplayRef.current;
+      const winnerActions = winnerActionsRef.current;
+      const spinBtn = spinBtnRef.current;
+      const wheelDisplay = wheelContainerRef.current;
+      
+      // Hide winner display
+      if (winnerDisplay) winnerDisplay.style.display = 'none';
+      if (winnerActions) winnerActions.style.display = 'none';
+      
+      // Scroll back to wheel before spinning
+      if (wheelDisplay) {
+        setTimeout(() => {
+          wheelDisplay.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+      }
+      
+      // Auto spin after removing
+      setTimeout(() => {
+        if (newEntries.length > 0) {
+          handleSpin();
+        } else {
+          setStatusText('No more entries. Click "Start Collecting" to begin again.');
+          if (spinBtn) spinBtn.disabled = true;
+        }
+      }, 500);
+    }
+  };
+
+  const handleRemoveAllSameNames = () => {
+    if (winnerIndex >= 0 && winnerIndex < wheelEntries.length) {
+      const winnerName = wheelEntries[winnerIndex].name;
+      const newEntries = wheelEntries.filter(entry => entry.name !== winnerName);
+      setWheelEntries(newEntries);
+      
+      // Get elements from refs
+      const winnerDisplay = winnerDisplayRef.current;
+      const winnerActions = winnerActionsRef.current;
+      const spinBtn = spinBtnRef.current;
+      const wheelDisplay = wheelContainerRef.current;
+      
+      // Hide winner display
+      if (winnerDisplay) winnerDisplay.style.display = 'none';
+      if (winnerActions) winnerActions.style.display = 'none';
+      
+      // Scroll back to wheel before spinning
+      if (wheelDisplay) {
+        setTimeout(() => {
+          wheelDisplay.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+      }
+      
+      // Auto spin after removing
+      setTimeout(() => {
+        if (newEntries.length > 0) {
+          handleSpin();
+        } else {
+          setStatusText('No more entries. Click "Start Collecting" to begin again.');
+          if (spinBtn) spinBtn.disabled = true;
+        }
+      }, 500);
+    }
+  };
+
+  // --- Batching Logic Helpers (Memoized) ---
+  const processBatch = useCallback(() => {
+      if (batchedEntriesRef.current.length > 0) {
+          console.log(`[Batch] processBatch called. Batch content:`, JSON.stringify(batchedEntriesRef.current));
+          const entriesToAdd = [...batchedEntriesRef.current]; 
+          batchedEntriesRef.current = []; 
+          
+          setWheelEntries(prev => {
+              console.log(`[Batch][setWheelEntries] Previous state length: ${prev.length}`);
+              console.log(`[Batch][setWheelEntries] Adding entries:`, JSON.stringify(entriesToAdd));
+              const newState = [...prev, ...entriesToAdd];
+              console.log(`[Batch][setWheelEntries] New state length: ${newState.length}`);
+              return newState;
+          });
+      }
+      if (batchUpdateTimeoutRef.current) {
+          clearTimeout(batchUpdateTimeoutRef.current); // Clear the timeout itself
+          batchUpdateTimeoutRef.current = null; // Clear the ref
+      }
+  // No dependencies needed as it only uses refs and the state setter
+  }, []); 
+
+  const scheduleBatchUpdate = useCallback(() => {
+      console.log(`[Batch] scheduleBatchUpdate called. Current timeout ref: ${batchUpdateTimeoutRef.current}`);
+      if (!batchUpdateTimeoutRef.current) { 
+          console.log(`[Batch] Scheduling timeout for 300ms.`);
+          batchUpdateTimeoutRef.current = setTimeout(processBatch, 300);
+      }
+  // Depends on the memoized processBatch function
+  }, [processBatch]); 
+  // --- End Batching Logic Helpers ---
+
+  // Memoized helper function to add entries to the wheel
+  const addEntriesToWheel = useCallback((userId, coinsToAdd, userData) => {
+    // This function now processes the calculated coins (either full value or increment)
+    if (coinsToAdd <= 0) return;
+
+    // Calculate entries based on coinsPerEntry setting
+    const entriesCount = Math.floor(coinsToAdd / coinsPerEntry);
+    console.log(`[ENTRIES] Attempting to add entries for ${coinsToAdd} coins (User: ${userId}) -> ${entriesCount} entries (cost: ${coinsPerEntry})`);
+
+    if (entriesCount <= 0) {
+      // Don't log noise if coinsToAdd < coinsPerEntry
+      // console.log(`[ENTRIES] Not enough coins for an entry (need at least ${coinsPerEntry})`);
+      return;
+    }
+
+    // Create entries immediately without batching
+    const entries = [];
+    for (let i = 0; i < entriesCount; i++) {
+      const entry = {
+        name: userData?.nickname || userData?.uniqueId || 'Unknown User', // Optional chaining
+        avatar: userData?.profilePictureUrl || 'https://www.tiktok.com/favicon.ico', // Optional chaining
+        isSubscriber: !!userData?.isSubscriber // Optional chaining
+      };
+      entries.push(entry);
+    }
+
+    // Add entries directly to state for immediate feedback
+    setWheelEntries(prev => {
+      const newEntries = [...prev, ...entries];
+      console.log(`[ENTRIES] Added ${entries.length} entries to wheel, new total: ${newEntries.length}`);
+      return newEntries;
+    });
+  // Dependency: coinsPerEntry (state), setWheelEntries (stable)
+  }, [coinsPerEntry]);
+
+  // Memoized helper function to update the like counter
+  const updateLikeCounter = useCallback((newLikes, userData) => {
+    if (newLikes <= 0) return;
+
+    // Add to the counter
+    likeCounterRef.current += newLikes;
+    console.log(`[LIKES COUNTER] Added ${newLikes} likes, counter now at: ${likeCounterRef.current} (Need ${likesPerEntry} for entry)`);
+
+    // Check if we've reached the threshold
+    if (likeCounterRef.current >= likesPerEntry) {
+      // Calculate how many entries to add
+      const entriesCount = Math.floor(likeCounterRef.current / likesPerEntry);
+      console.log(`[LIKES] Adding ${entriesCount} entries from ${likeCounterRef.current} likes (${likesPerEntry} per entry)`);
+
+      // Reset counter, keeping any remainder
+      likeCounterRef.current = likeCounterRef.current % likesPerEntry;
+
+      // Create entries immediately
+      const entries = [];
+      for (let i = 0; i < entriesCount; i++) {
+        const entry = {
+            name: userData?.nickname || userData?.uniqueId || 'Unknown User',
+            avatar: userData?.profilePictureUrl || 'https://www.tiktok.com/favicon.ico',
+            isSubscriber: !!userData?.isSubscriber
+        };
+        entries.push(entry);
+      }
+
+      // Add entries directly to state
+      setWheelEntries(prev => {
+        const newEntries = [...prev, ...entries];
+        console.log(`[LIKES] Added ${entries.length} entries to wheel from likes, new total: ${newEntries.length}`);
+        return newEntries;
+      });
+    }
+  // Dependencies: likesPerEntry (state), setWheelEntries (stable), likeCounterRef (stable)
+  }, [likesPerEntry]);
+
+
+  // Memoized Main Event Handlers
+  const handleGift = useCallback((data) => {
+    console.log(`
+[GIFT EVENT] --------------`);
+    console.log(`[GIFT] Data:`, JSON.stringify(data));
+    // Check mode using ref for stability inside useCallback
+    if (currentModeRef.current !== 'gifts' || !isCollectingRef.current) {
+        console.log(`[GIFT] Ignored: Mode (${currentModeRef.current}) is not 'gifts' or not collecting.`);
+        return;
+    }
+    if (subscriberOnly && !data.isSubscriber) {
+        console.log(`[GIFT] Ignored: Subscriber only mode active.`);
+        return;
+    }
+
+    // Extract user ID
+    const userId = data.userId || data.uniqueId || data.nickname;
+    if (!userId) {
+      console.warn("[GIFT] Could not identify user from gift event data");
+      return;
+    }
+
+    // ==========================================
+    // SUPER SIMPLE COUNTING APPROACH - ONE COIN, ONE ENTRY
+    // ==========================================
+
+    // 1. Extract Gift Info & Value
+    const giftType = data.giftType || (data.gift && data.gift.giftType) || 'unknown';
+    const giftName = data.giftName || (data.gift && data.gift.giftName) || giftType;
+    
+    // Create a unique event ID to detect duplicates
+    const eventId = `${userId}-${giftType}-${Date.now()}`;
+
+    // Determine coin value from whatever field is available
+    let reportedValue = 0;
+    if (data.diamondCount !== undefined) { reportedValue = data.diamondCount; }
+    else if (data.diamonds !== undefined) { reportedValue = data.diamonds; }
+    else if (data.giftValue !== undefined) { reportedValue = data.giftValue; }
+    else if (data.repeatEnd !== undefined) { reportedValue = data.repeatEnd; }
+    else if (data.repeatCount !== undefined) { reportedValue = data.repeatCount; }
+    else if (data.gift && data.gift.diamondCount !== undefined) { reportedValue = data.gift.diamondCount; }
+    else { reportedValue = 1; }
+
+    // 2. Initialize or Get User Gift Tracking
+    if (!userGiftTrackingRef.current[userId]) {
+      userGiftTrackingRef.current[userId] = {
+        lastProcessedValues: {},     // Last processed value by gift type
+        processedEventIds: new Set(),  // Track already processed events
+        lastEventTime: Date.now(),     // Last time we saw an event
+        totalCoins: 0                  // Total coins processed
+      };
+    }
+
+    const tracking = userGiftTrackingRef.current[userId];
+    const now = Date.now();
+    
+    // Prevent duplicate processing by checking event ID
+    if (tracking.processedEventIds.has(eventId)) {
+      console.log(`[GIFT] Already processed event ${eventId}, skipping`);
+      return;
+    }
+    
+    // Add this event to processed set
+    tracking.processedEventIds.add(eventId);
+    if (tracking.processedEventIds.size > 200) {
+      // Keep set size manageable by removing oldest entries
+      const iterator = tracking.processedEventIds.values();
+      tracking.processedEventIds.delete(iterator.next().value);
+    }
+
+    console.log(`[GIFT] Processing gift from ${userId}: ${giftName} (${giftType}), Value: ${reportedValue}`);
+    
+    // Initialize tracking for this gift type if not exists
+    if (!tracking.lastProcessedValues[giftType]) {
+      tracking.lastProcessedValues[giftType] = 0;
+    }
+    
+    // 3. CORE LOGIC: Determine coins to add based on gift value
+    let coinsToAdd = 0;
+    const lastValue = tracking.lastProcessedValues[giftType];
+    
+    // CASE: Small value gift (1-3 coins) - common for rapid fire gifts
+    if (reportedValue <= 3) {
+      // For 1-coin gifts, ALWAYS count as 1
+      if (reportedValue === 1) {
+        coinsToAdd = 1;
+        console.log(`[GIFT] Single coin gift - adding 1 entry`);
+      }
+      // For 2-3 coin gifts, check if it's an increment or a new gift
+      else {
+        // If value is higher than last processed for this type, it's an increment
+        if (reportedValue > lastValue) {
+          coinsToAdd = reportedValue - lastValue;
+          console.log(`[GIFT] Small gift increment: ${lastValue} -> ${reportedValue}, adding ${coinsToAdd}`);
+        }
+        // If same or lower value, treat as new gift
+        else {
+          coinsToAdd = reportedValue;
+          console.log(`[GIFT] New small gift with value ${reportedValue}, adding ${coinsToAdd}`);
+        }
+      }
+    }
+    // CASE: Larger gifts that might be part of cumulative reporting
+    else {
+      // If value increased, only count the increment
+      if (reportedValue > lastValue) {
+        coinsToAdd = reportedValue - lastValue;
+        console.log(`[GIFT] Value increased: ${lastValue} -> ${reportedValue}, adding ${coinsToAdd}`);
+      }
+      // If this is first gift of type or value reset lower, use full value
+      else if (lastValue === 0 || (reportedValue < lastValue && now - tracking.lastEventTime > 3000)) {
+        coinsToAdd = reportedValue;
+        console.log(`[GIFT] New gift sequence with value ${reportedValue}, adding ${coinsToAdd}`);
+      }
+      // If same value within short time, likely duplicate
+      else if (reportedValue === lastValue && now - tracking.lastEventTime < 1000) {
+        console.log(`[GIFT] Duplicate gift value ${reportedValue} detected, ignoring`);
+        coinsToAdd = 0;
+      }
+      // Otherwise, something unusual - log but count the gift
+      else {
+        coinsToAdd = reportedValue;
+        console.log(`[GIFT] Unusual pattern - value ${reportedValue} after previous ${lastValue}, counting full value`);
+      }
+    }
+    
+    // Update tracking
+    tracking.lastProcessedValues[giftType] = reportedValue;
+    tracking.lastEventTime = now;
+    
+    // 4. Add entries to wheel (only if coins to add > 0)
+    if (coinsToAdd > 0) {
+      tracking.totalCoins += coinsToAdd;
+      console.log(`[GIFT] Adding ${coinsToAdd} entries to wheel - user total: ${tracking.totalCoins}`);
+      addEntriesToWheel(userId, coinsToAdd, data);
+    }
+
+    // 5. Clean up tracking after inactivity
+    if (giftSessionTimeoutRef.current[userId]) {
+      clearTimeout(giftSessionTimeoutRef.current[userId]);
+    }
+    
+    giftSessionTimeoutRef.current[userId] = setTimeout(() => {
+      console.log(`[GIFT] User ${userId} inactive for 30s - ending session with total ${userGiftTrackingRef.current[userId]?.totalCoins || 0} coins`);
+      delete userGiftTrackingRef.current[userId];
+      delete giftSessionTimeoutRef.current[userId];
+    }, 30000);
+
+  // Dependencies: subscriberOnly state, addEntriesToWheel callback, refs (stable)
+  }, [subscriberOnly, addEntriesToWheel]);
+
+  const handleLike = useCallback((data) => {
+    console.log(`[LIKE EVENT RECEIVED] Data:`, JSON.stringify(data));
+    // Check mode using ref for stability inside useCallback
+    if (currentModeRef.current !== 'likes' || !isCollectingRef.current) {
+      console.log(`[LIKE] Ignored: Mode (${currentModeRef.current}) is not 'likes' or not collecting.`);
+      return;
+    }
+    if (subscriberOnly && !data.isSubscriber) {
+        console.log(`[LIKE] Ignored: Subscriber only mode active.`);
+        return;
+    }
+
+    // Extract user ID
+    const userId = data.userId || data.uniqueId || data.nickname;
+    if (!userId) {
+      console.warn("[LIKE] Could not identify user from like event data");
+      return;
+    }
+
+    // Determine like count from various possible fields
+    let likeCount = 0;
+    if (data.likeCount !== undefined) {
+      likeCount = data.likeCount;
+    } else if (data.likes !== undefined) {
+      likeCount = data.likes;
+    } else if (data.count !== undefined) {
+      likeCount = data.count;
+    } else if (data.like && data.like.count !== undefined) {
+      likeCount = data.like.count;
+    } else {
+      likeCount = 1;
+    }
+
+    console.log(`[LIKE] User: ${userId}, Reported Likes: ${likeCount}`);
+
+    // Initialize or Update User Tracking for Likes
+    if (!userLikeTrackingRef.current[userId]) {
+      // First time seeing this user like in this session
+      userLikeTrackingRef.current[userId] = {
+         maxReportedLikes: 0, // Start at 0 before first like event
+         lastTimestamp: Date.now()
+      };
+      console.log(`[LIKE TRACKING] Initialized for ${userId}.`);
+      // Process initial likes immediately
+      updateLikeCounter(likeCount, data);
+      // Set initial max reported after processing
+      userLikeTrackingRef.current[userId].maxReportedLikes = likeCount;
+
+    } else {
+      // Update tracking for existing user
+      const userTracking = userLikeTrackingRef.current[userId];
+
+      // Calculate the increment since the last MAX report
+      const incrementalLikes = Math.max(0, likeCount - userTracking.maxReportedLikes);
+
+      if (incrementalLikes > 0) {
+        console.log(`[LIKE TRACKING] User ${userId}: Previous Max=${userTracking.maxReportedLikes}, Current=${likeCount}, Increment=${incrementalLikes}`);
+        // Add only the increment to the counter
+        updateLikeCounter(incrementalLikes, data);
+        // Update the max reported likes for this session AFTER processing increment
+        userTracking.maxReportedLikes = likeCount;
+      } else {
+        console.log(`[LIKE TRACKING] User ${userId}: Received like count ${likeCount} which is not higher than max ${userTracking.maxReportedLikes}, ignoring increment.`);
+      }
+
+      // Always update the timestamp
+      userTracking.lastTimestamp = Date.now();
+    }
+
+    // Reset tracking after a period of inactivity
+    if (likeSessionTimeoutRef.current[userId]) {
+      clearTimeout(likeSessionTimeoutRef.current[userId]);
+    }
+
+    likeSessionTimeoutRef.current[userId] = setTimeout(() => {
+      console.log(`[LIKE SESSION] Resetting like tracking for ${userId} after ${30}s inactivity.`);
+      delete userLikeTrackingRef.current[userId];
+      delete likeSessionTimeoutRef.current[userId];
+    }, 30000); // 30 second timeout
+
+  // Dependencies: subscriberOnly state, updateLikeCounter callback, refs (stable)
+  }, [subscriberOnly, updateLikeCounter]);
+
+  const handleChat = useCallback((data) => {
+    console.log(`[EVENT handleChat] Received. Current Mode: ${currentModeRef.current}, isCollecting: ${isCollectingRef.current}`);
+    // STRICT MODE CHECK
+    if (currentModeRef.current !== 'chat' || !isCollectingRef.current) {
+      console.log(`[EVENT handleChat] Ignored: Mode is ${currentModeRef.current}, not 'chat'.`);
+      return;
+    }
+    if (subscriberOnly && !data.isSubscriber) return;
+
+    const entry = {
+        name: data?.nickname || data?.uniqueId || 'Unknown User',
+        avatar: data?.profilePictureUrl || 'https://www.tiktok.com/favicon.ico',
+        isSubscriber: !!data?.isSubscriber
+    };
+    console.log('[handleChat] Creating entry object:', JSON.stringify(entry));
+    // Add directly
+     setWheelEntries(prev => [...prev, entry]);
+
+  // Dependencies: subscriberOnly state, setWheelEntries (stable), refs (stable)
+  }, [subscriberOnly]);
+
+  const handleJoin = useCallback((data) => {
+    console.log(`[EVENT handleJoin] Received. Current Mode: ${currentModeRef.current}, isCollecting: ${isCollectingRef.current}`);
+    // STRICT MODE CHECK
+    if (currentModeRef.current !== 'joins' || !isCollectingRef.current) {
+      console.log(`[EVENT handleJoin] Ignored: Mode is ${currentModeRef.current}, not 'joins'.`);
+      return;
+    }
+    if (subscriberOnly && !data.isSubscriber) return;
+
+    const entry = {
+        name: data?.nickname || data?.uniqueId || 'Unknown User',
+        avatar: data?.profilePictureUrl || 'https://www.tiktok.com/favicon.ico',
+        isSubscriber: !!data?.isSubscriber
+    };
+    console.log('[handleJoin] Creating entry object:', JSON.stringify(entry));
+    // Add directly
+    setWheelEntries(prev => [...prev, entry]);
+
+  // Dependencies: subscriberOnly state, setWheelEntries (stable), refs (stable)
+  }, [subscriberOnly]);
+
+
+  // Memoized Event Listeners (depend on memoized handlers)
+  const giftListener = useCallback((e) => {
+    if (e.detail) { console.log("[LISTENER] tiktok-gift triggered"); handleGift(e.detail); }
+  }, [handleGift]);
+
+  const likeListener = useCallback((e) => {
+    if (e.detail) { console.log("[LISTENER] tiktok-like triggered"); handleLike(e.detail); }
+  }, [handleLike]);
+
+  const chatListener = useCallback((e) => {
+    if (e.detail) { console.log("[LISTENER] tiktok-chat triggered"); handleChat(e.detail); }
+  }, [handleChat]);
+
+  const joinListener = useCallback((e) => {
+    if (e.detail) { console.log("[LISTENER] tiktok-member triggered"); handleJoin(e.detail); }
+  }, [handleJoin]);
+
+
+  // Effect for adding/removing event listeners based on isCollecting
+  useEffect(() => {
+    // This effect runs when isCollecting changes or if listeners/handlers change
+    if (isCollecting) {
+      console.log('[Wheel] Attaching event listeners (isCollecting=true)');
+      // Event binding (use the memoized listeners defined above)
+      try {
+        window.addEventListener('tiktok-gift', giftListener);
+        window.addEventListener('tiktok-like', likeListener);
+        window.addEventListener('tiktok-chat', chatListener);
+        window.addEventListener('tiktok-member', joinListener);
+
+        // Try to connect to TikTokConnection if available
+        if (window.tiktokConnection) {
+          console.log('[Wheel] Attaching listeners to window.tiktokConnection');
+          // Use the memoized HANDLERS for the connection library
+          window.tiktokConnection.on('gift', handleGift);
+          window.tiktokConnection.on('like', handleLike);
+          window.tiktokConnection.on('chat', handleChat);
+          window.tiktokConnection.on('member', handleJoin);
+        } else {
+          console.warn('[Wheel] window.tiktokConnection not found during listener setup.');
+        }
+      } catch (err) {
+        console.error('[Wheel] Error setting up event handlers:', err);
+      }
+
+      // Cleanup function for when isCollecting becomes FALSE or dependencies change
+      return () => {
+        console.log("[Wheel] Cleaning up event listeners (isCollecting=false or deps changed)");
+        // Remove window event listeners using the memoized listeners
+        window.removeEventListener('tiktok-gift', giftListener);
+        window.removeEventListener('tiktok-like', likeListener);
+        window.removeEventListener('tiktok-chat', chatListener);
+        window.removeEventListener('tiktok-member', joinListener);
+
+        // Remove listeners from TikTokConnection if it exists
+        if (window.tiktokConnection) {
+          console.log('[Wheel] Removing listeners from window.tiktokConnection');
+           // Use the memoized HANDLERS for removal
+          if (typeof window.tiktokConnection.off === 'function') {
+              window.tiktokConnection.off('gift', handleGift);
+              window.tiktokConnection.off('like', handleLike);
+              window.tiktokConnection.off('chat', handleChat);
+              window.tiktokConnection.off('member', handleJoin);
+          } else if (typeof window.tiktokConnection.removeListener === 'function') {
+              window.tiktokConnection.removeListener('gift', handleGift);
+              window.tiktokConnection.removeListener('like', handleLike);
+              window.tiktokConnection.removeListener('chat', handleChat);
+              window.tiktokConnection.removeListener('member', handleJoin);
+          }
+        }
+
+        // Clear any pending processing timers on stop collecting
+        console.log('[Wheel] Clearing gift processing timers on cleanup...');
+        Object.values(giftSessionTimeoutRef.current).forEach(timeoutId => clearTimeout(timeoutId));
+        giftSessionTimeoutRef.current = {};
+
+
+        // Clear all user tracking refs on stop collecting
+        console.log('[Wheel] Clearing user tracking data on cleanup...');
+        userGiftTrackingRef.current = {};
+        userLikeTrackingRef.current = {};
+        Object.values(giftSessionTimeoutRef.current).forEach(timeoutId => clearTimeout(timeoutId));
+        giftSessionTimeoutRef.current = {};
+        Object.values(likeSessionTimeoutRef.current).forEach(timeoutId => clearTimeout(timeoutId));
+        likeSessionTimeoutRef.current = {};
+
+      };
+    }
+    // Dependencies: Include isCollecting state + ONLY the memoized listeners/handlers
+    // This ensures the effect only re-runs if collecting starts/stops, or if a handler/listener function
+    // genuinely changes due to its own dependencies (like coinsPerEntry changing).
+  }, [isCollecting, giftListener, likeListener, chatListener, joinListener, handleGift, handleLike, handleChat, handleJoin]);
+
+
+  // Remove the old useEffect that bound listeners incorrectly
+  /* --- Previous problematic useEffect --- 
+  useEffect(() => {
+    if (!isCollecting) { ... return; }
+    try {
+      const giftListener = ... // Defined INSIDE
+      window.addEventListener('tiktok-gift', giftListener); 
+    } catch {}
+    return () => { 
+      window.removeEventListener('tiktok-gift', giftListener); // ERROR HERE
+    }
+  }, [isCollecting, currentMode, subscriberOnly, likesPerEntry, coinsPerEntry]);
+  */
+
+  // Add a throttled resize handler to redraw the wheel when window size changes
+  useEffect(() => {
+    let resizeTimeout;
+    
+    const handleResize = () => {
+      if (!isVisible) return;
+      
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        // Redraw is handled by the wheelSize effect, just clear timeout
+        // if (canvasRef.current) { ... }
+      }, 250); 
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(resizeTimeout);
+    };
+  }, [isVisible]);
+  
+  // Add a throttled visibility check timer to periodically check if redraw is needed
+  useEffect(() => {
+    // Clear any existing timer
+    if (visibilityTimerRef.current) {
+      clearTimeout(visibilityTimerRef.current);
+      visibilityTimerRef.current = null;
+    }
+    
+    // Only set up the timer if the wheel is visible and not spinning
+    if (isVisible && !isSpinning) {
+      visibilityTimerRef.current = setTimeout(() => {
+        visibilityTimerRef.current = null;
+        
+        // Redraw only if needed
+        // REMOVE references to needsRedraw
+        // if (needsRedraw && canvasRef.current) { 
+        //   drawWheel();
+        //   setNeedsRedraw(false);
+        // }
+      }, 1000); // Only check once per second when idle
+    }
+    
+    return () => {
+      if (visibilityTimerRef.current) {
+        clearTimeout(visibilityTimerRef.current);
+        visibilityTimerRef.current = null;
+      }
+    };
+    // REMOVE needsRedraw from dependency array
+  }, [isVisible, /* needsRedraw, */ isSpinning]);
+
+  // Also clean up on component unmount (uses cleanupResources)
+  useEffect(() => {
+    return () => {
+      console.log("[WheelControls] Unmounting, running cleanup.");
+      cleanupResources();
+    };
+  }, [cleanupResources]); // Add dependency here
+
+  // Redraw wheel content when drawWheel function changes (due to dependencies like textSize) or visibility changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (isVisible && canvas && drawWheel) { // Check if drawWheel is defined
+        console.log('[Effect drawWheel/isVisible] Redrawing wheel content.');
+        // Use current entries ref to avoid adding wheelEntries as dependency here
+        drawWheel(canvas, wheelEntriesRef.current); 
+    }
+  }, [drawWheel, isVisible]); // Depends on the memoized drawWheel and visibility
+
+  // Add a separate effect to maintain the test button even when not collecting
+  useEffect(() => {
+    // Add test button - always available
+    const createTestButton = () => {
+      console.log('[Wheel] Creating test button');
+      const testBtn = document.createElement('button');
+      testBtn.id = 'wheelTestBtn';
+      testBtn.textContent = '🎡 Add 10 Test Entries';
+      testBtn.style.position = 'fixed';
+      testBtn.style.bottom = '20px';
+      testBtn.style.right = '20px';
+      testBtn.style.zIndex = '9999';
+      testBtn.style.background = 'rgba(139, 92, 246, 0.9)';
+      testBtn.style.color = 'white';
+      testBtn.style.border = 'none';
+      testBtn.style.padding = '8px 15px';
+      testBtn.style.borderRadius = '8px';
+      testBtn.style.cursor = 'pointer';
+      testBtn.style.boxShadow = '0 4px 10px rgba(0, 0, 0, 0.3)';
+      
+      testBtn.addEventListener('click', () => {
+        console.log('[Test Button] Clicked - adding 10 test entries');
+        
+        // Create an array of 10 test entries instead of 50
+        const newEntries = Array.from({ length: 10 }, (_, i) => ({
+          name: `Test User ${Math.floor(Math.random() * 1000)}`,
+          avatar: 'https://www.tiktok.com/favicon.ico',
+          isSubscriber: Math.random() > 0.5
+        }));
+        
+        // Add all 10 entries at once using a functional update to ensure correct state
+        setWheelEntries(prevEntries => {
+          console.log(`[Test] Adding 10 entries to current ${prevEntries.length} entries`);
+          return [...prevEntries, ...newEntries];
+        });
+      });
+      
+      return testBtn;
+    };
+    
+    // Remove any existing button
+    const existingBtn = document.getElementById('wheelTestBtn');
+    if (existingBtn) {
+      existingBtn.remove();
+    }
+    
+    // Add the button
+    const testBtn = createTestButton();
+    document.body.appendChild(testBtn);
+    
+    // Clean up on unmount
+    return () => {
+      const btnToRemove = document.getElementById('wheelTestBtn');
+      if (btnToRemove) {
+        btnToRemove.remove();
+      }
+    };
+  }, []); // Empty dependency array - only run once on mount
+
+  // In the return section, update the wheel-related components
+  return (
+    <>
+      <StatusText id="wheelStatus">{statusText}</StatusText>
+      
+      <ModeSelector>
+        <ModeButton 
+          className={currentMode === 'gifts' ? 'active' : ''}
+          onClick={() => handleModeSelection('gifts')}
+        >
+          <span>🎁 Gifts</span>
+        </ModeButton>
+        <ModeButton 
+          className={currentMode === 'likes' ? 'active' : ''}
+          onClick={() => handleModeSelection('likes')}
+        >
+          <span>❤️ Likes (per 100)</span>
+        </ModeButton>
+        <ModeButton 
+          className={currentMode === 'chat' ? 'active' : ''}
+          onClick={() => handleModeSelection('chat')}
+        >
+          <span>💬 Chat</span>
+        </ModeButton>
+        <ModeButton 
+          className={currentMode === 'joins' ? 'active' : ''}
+          onClick={() => handleModeSelection('joins')}
+        >
+          <span>👋 Joins</span>
+        </ModeButton>
+      </ModeSelector>
+      
+      <Controls>
+        <Button 
+          ref={startCollectingBtnRef}
+          variant="collecting"
+          onClick={handleStartCollecting}
+          disabled={isCollecting || isSpinning}
+        >
+          ▶️ Start Collecting
+        </Button>
+        <Button 
+          ref={spinBtnRef}
+          variant="spin"
+          onClick={handleSpin}
+          disabled={wheelEntries.length === 0 || isSpinning}
+        >
+          🎡 Spin!
+        </Button>
+        <Button 
+          ref={resetWheelBtnRef}
+          variant="reset"
+          onClick={handleReset}
+          disabled={isSpinning}
+        >
+          🔄 Reset
+        </Button>
+        
+        <div style={{ display: 'flex', marginLeft: 'auto', gap: '0.5rem', alignItems: 'center' }}>
+          <SubscriberToggle>
+            <input 
+              ref={subscriberOnlyToggleRef}
+              type="checkbox" 
+              id="subscriberOnlyToggle"
+              checked={subscriberOnly}
+              onChange={(e) => setSubscriberOnly(e.target.checked)}
+            />
+            <label htmlFor="subscriberOnlyToggle">Subscribers only</label>
+          </SubscriberToggle>
+          
+          <SettingsButton
+            ref={settingsButtonRef}
+            onClick={(e) => {
+              e.stopPropagation();
+              
+              if (settingsButtonRef.current) {
+                const btnRect = settingsButtonRef.current.getBoundingClientRect();
+                setPanelPosition({
+                  top: `${btnRect.bottom + 10}px`,
+                  right: `${window.innerWidth - btnRect.right}px`, // Position from right edge
+                  left: 'auto'
+                });
+              }
+              
+              setSettingsPanelVisible(!settingsPanelVisible);
+            }}
+          >
+            <Settings size={16} />
+            <span>Wheel Settings</span>
+          </SettingsButton>
+        </div>
+      </Controls>
+      
+      <WheelDisplay id="wheelDisplay" ref={wheelContainerRef}>
+        <WheelWrapper 
+          id="wheelWrapper" 
+          size={actualWheelSize}
+          style={{aspectRatio: "1/1"}} // Force perfect circle
+        >
+          <EntryCount>{wheelEntries.length} entries</EntryCount>
+          <WheelCanvas 
+            ref={canvasRef} 
+            width={actualWheelSize} 
+            height={actualWheelSize}
+          />
+          <WheelPointer ref={pointerRef} className="wheel-pointer" />
+          <WheelCenter 
+            centerSize={centerSize}
+            entryCount={wheelEntries.length}
+          />
+        </WheelWrapper>
+      </WheelDisplay>
+      
+      <WinnerDisplay ref={winnerDisplayRef} id="winnerDisplay" />
+      
+      <WinnerActions ref={winnerActionsRef} id="winnerActions" style={{ display: 'none' }}>
+        <Button onClick={handleRemoveWinner}>
+          🔄 Remove Winner & Respin
+        </Button>
+        <Button onClick={handleRemoveAllSameNames}>
+          🔄 Remove All Entries with Same Name & Respin
+        </Button>
+      </WinnerActions>
+      
+      <SettingsPanel 
+        ref={settingsPanelRef}
+        isVisible={settingsPanelVisible}
+        top={panelPosition.top}
+        left={panelPosition.left}
+        right={panelPosition.right}
+      >
+        <h4>
+          <Gauge size={16} />
+          <span>Wheel Size Settings</span>
+        </h4>
+        
+        <SettingsRow>
+          <div className="setting-label">
+            Wheel Size: <strong>{wheelSize}%</strong>
+          </div>
+          <SizeSlider 
+            ref={sizeSliderRef}
+            type="range" 
+            id="wheelSizeSlider" 
+            min="50" 
+            max="600" 
+            value={wheelSize}
+            onChange={(e) => {
+              const newSize = parseInt(e.target.value, 10);
+              setWheelSize(newSize);
+            }}
+          />
+          <SizeLabels>
+            <span>Small</span>
+            <span>Full Panel</span>
+          </SizeLabels>
+        </SettingsRow>
+        
+        <SettingsRow>
+          <div className="setting-label">
+            Text Size: <strong>{textSize}%</strong>
+          </div>
+          <SizeSlider 
+            type="range" 
+            id="textSizeSlider" 
+            min="50" 
+            max="300" 
+            value={textSize}
+            onChange={(e) => {
+              const newSize = parseInt(e.target.value, 10);
+              setTextSize(newSize);
+            }}
+          />
+          <SizeLabels>
+            <span>Small Text</span>
+            <span>Large Text</span>
+          </SizeLabels>
+        </SettingsRow>
+
+        <SettingsRow>
+          <div className="setting-label">
+            Center Hub Size: <strong>{centerSize}%</strong>
+          </div>
+          <SizeSlider 
+            type="range" 
+            id="centerSizeSlider" 
+            min="50" 
+            max="300" 
+            value={centerSize}
+            onChange={(e) => {
+              const newSize = parseInt(e.target.value, 10);
+              setCenterSize(newSize);
+            }}
+          />
+          <SizeLabels>
+            <span>Small Hub</span>
+            <span>Large Hub</span>
+          </SizeLabels>
+        </SettingsRow>
+
+        <SettingsRow>
+          <div className="setting-label">Spin Duration: <strong>{spinDuration}s</strong></div>
+          <SizeSlider 
+            type="range" 
+            id="spinDurationSlider" 
+            min="5"  /* Min duration */
+            max="30" /* Max duration */
+            step="1"
+            value={spinDuration}
+            onChange={(e) => {
+              const newDuration = parseInt(e.target.value, 10);
+              setSpinDuration(newDuration);
+            }}
+          />
+          <SizeLabels>
+            <span>Short (5s)</span>
+            <span>Long (30s)</span>
+          </SizeLabels>
+        </SettingsRow>
+        
+        {/* New slider for Likes Per Entry */}
+        <SettingsRow>
+          <div className="setting-label">
+            Likes Per Entry: <strong>{likesPerEntry}</strong>
+          </div>
+          <SizeSlider 
+            type="range" 
+            id="likesPerEntrySlider" 
+            min="1" 
+            max="1000" 
+            step="10"
+            value={likesPerEntry}
+            onChange={(e) => {
+              const newValue = parseInt(e.target.value, 10);
+              setLikesPerEntry(newValue);
+            }}
+          />
+          <SizeLabels>
+            <span>1 Like</span>
+            <span>1000 Likes</span>
+          </SizeLabels>
+        </SettingsRow>
+        
+        {/* New slider for Coins Per Entry */}
+        <SettingsRow>
+          <div className="setting-label">
+            Coins Per Entry: <strong>{coinsPerEntry}</strong>
+          </div>
+          <SizeSlider 
+            type="range" 
+            id="coinsPerEntrySlider" 
+            min="1" 
+            max="1000" 
+            step="10"
+            value={coinsPerEntry}
+            onChange={(e) => {
+              const newValue = parseInt(e.target.value, 10);
+              setCoinsPerEntry(newValue);
+            }}
+          />
+          <SizeLabels>
+            <span>1 Coin</span>
+            <span>1000 Coins</span>
+          </SizeLabels>
+        </SettingsRow>
+
+        <SettingsRow style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <label htmlFor="shadowToggle" className="setting-label" style={{ marginBottom: 0, cursor: 'pointer' }}>
+            Show Text Shadows
+          </label>
+          <input 
+            type="checkbox" 
+            id="shadowToggle"
+            style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--accent)'}}
+            checked={showTextShadows}
+            onChange={(e) => setShowTextShadows(e.target.checked)}
+          />
+        </SettingsRow>
+
+        {/* Add Slow Spin Toggle Row */}
+        <SettingsRow style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <label htmlFor="slowSpinToggle" className="setting-label" style={{ marginBottom: 0, cursor: 'pointer' }}>
+            Enable Idle Spin
+          </label>
+          <input 
+            type="checkbox" 
+            id="slowSpinToggle"
+            style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--accent)'}}
+            checked={slowSpinEnabled}
+            onChange={(e) => setSlowSpinEnabled(e.target.checked)}
+          />
+        </SettingsRow>
+
+        <SettingsFooter>
+          <Button onClick={() => setSettingsPanelVisible(false)}>
+            Close
+          </Button>
+        </SettingsFooter>
+      </SettingsPanel>
+      
+      {/* Add clicker sound element */}
+      <audio id="clickerSound" src="https://assets.mixkit.co/sfx/preview/mixkit-light-button-2580.mp3" preload="auto" />
+    </>
+  );
+};
+
+export default WheelControls; 
